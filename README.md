@@ -1,12 +1,11 @@
 # 🚀 auto-snapshot
 
-[English](#-english) | [繁體中文](#-繁體中文)
+> A zero-infrastructure, local persistent memory engine and MCP server designed specifically for AI coding agents.
 
 ---
 
-## 🇺🇸 English
-
-> A zero-infrastructure, local persistent memory engine and MCP server designed specifically for AI coding agents (such as Claude Code, Cursor, Windsurf, etc.).
+<details open>
+<summary><b>🌐 🇺🇸 English (Click to expand/collapse)</b></summary>
 
 `auto-snapshot` helps solve the "amnesia" problem when starting new chat sessions by automatically tracking development milestones, decisions, files touched, and task lists in an append-only, token-efficient JSONL log. It features automated episodic compression to fit long logs into small context windows.
 
@@ -88,11 +87,10 @@ Go to **Settings** -> **Features** -> **MCP** and add a new MCP Server:
 - **Type**: `stdio`
 - **Command**: `npx -y auto-snapshot`
 
----
+</details>
 
-## 🇹🇼 繁體中文
-
-> 一款專為 AI 編碼助理（如 Claude Code、Cursor、Windsurf 等）設計的零基礎架構、本地持久化記憶引擎與 MCP 伺服器。
+<details>
+<summary><b>🌐 🇹🇼 繁體中文 (點擊展開/收合)</b></summary>
 
 `auto-snapshot` 藉由自動追蹤開發里程碑、決策、修改檔案與任務清單，並將其記錄於一個 token 高效的 append-only JSONL 日誌中，完美解決了每次開啟新對話 Session 時 AI 的「失憶症」。它具備自動情節壓縮（Episodic Compression）機制，確保長期日誌能完美適應極小的 Context Window。
 
@@ -173,6 +171,8 @@ auto-snapshot compress
 - **Name**: `auto-snapshot`
 - **Type**: `stdio`
 - **Command**: `npx -y auto-snapshot`
+
+</details>
 
 ---
 
