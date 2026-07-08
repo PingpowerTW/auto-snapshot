@@ -187,6 +187,7 @@ interface Snapshot {
   files?: string[];     // Array of affected files
   decision?: string;    // Crucial decision text
   tags?: string[];      // Associated tags
+  skill?: string;       // [NEW] Cross-skill binding: agent skill name (e.g. "firebase-rules")
   state?: {             // State mapping (handoff only)
     completed: string[];
     in_progress: string[];
@@ -195,6 +196,24 @@ interface Snapshot {
     next_action: string;
   };
 }
+```
+
+### Advanced CLI Flags
+
+| Flag | Command | Description |
+|:-----|:--------|:------------|
+| `-s, --skill <name>` | `capture` | Bind this snapshot to a specific skill for cross-skill recall |
+| `-s, --skill <name>` | `recover` | Filter returned snapshots to those matching a skill |
+| `-q, --query <text>` | `recover` | Run keyword fingerprinting — tells you if local memory is sufficient or a remote Supabase query is needed |
+
+```bash
+# Example: capture a firebase-rules related decision
+auto-snapshot capture decision "使用 Firebase Auth 而非自建 JWT" --tags auth,firebase --skill firebase-rules
+
+# Example: recover context filtered to firebase-rules, with fingerprinting
+auto-snapshot recover --skill firebase-rules --query "firebase auth token issue"
+# → ✅ 本地記憶覆蓋查詢，無需查詢遠端知識庫.
+# → ⚠️ 本地記憶不足，建議查詢遠端 Supabase Memory Engine.
 ```
 
 ---

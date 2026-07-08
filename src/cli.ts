@@ -24,6 +24,7 @@ program
   .option('-f, --files <files>', 'Comma-separated list of modified files')
   .option('-t, --tags <tags>', 'Comma-separated list of tags')
   .option('-d, --decision <decision>', 'Key decision detail')
+  .option('-s, --skill <skill>', 'Bind this snapshot to a specific agent skill (for cross-skill recall)')
   .option('--completed <items>', 'Comma-separated completed items (for handoff type)')
   .option('--in-progress <items>', 'Comma-separated in-progress items (for handoff type)')
   .option('--pending <items>', 'Comma-separated pending items (for handoff type)')
@@ -41,6 +42,7 @@ program
     const files = options.files ? options.files.split(',').map((f: string) => f.trim()) : undefined;
     const tags = options.tags ? options.tags.split(',').map((t: string) => t.trim()) : undefined;
     const decision = options.decision;
+    const skill = options.skill;
 
     let state: SnapshotState | undefined = undefined;
     if (
@@ -59,7 +61,7 @@ program
       };
     }
 
-    captureSnapshot(type, summary, { files, tags, decision, state });
+    captureSnapshot(type, summary, { files, tags, decision, skill, state });
   });
 
 program
@@ -72,8 +74,10 @@ program
 program
   .command('recover')
   .description('Recover project context and display last 10 snapshots')
-  .action(() => {
-    recoverContext();
+  .option('-s, --skill <skill>', 'Filter snapshots by a specific agent skill')
+  .option('-q, --query <query>', 'A query string for keyword fingerprinting (decides if remote lookup is needed)')
+  .action((options) => {
+    recoverContext({ skill: options.skill, query: options.query });
   });
 
 program.parse();

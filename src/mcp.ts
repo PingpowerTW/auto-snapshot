@@ -66,6 +66,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Important architectural or technical decision made.',
             },
+            skill: {
+              type: 'string',
+              description: 'Optional: bind this snapshot to a specific agent skill name for cross-skill recall (e.g. "firebase-rules", "auth").',
+            },
             state: {
               type: 'object',
               properties: {
@@ -83,10 +87,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'snapshot_recover',
-        description: 'Read and display the current PROJECT_CONTEXT.md and the last 10 snapshots.',
+        description: 'Read and display the current PROJECT_CONTEXT.md and the last 10 snapshots. Supports skill filtering and keyword fingerprinting to determine if a remote knowledge-base lookup is needed.',
         inputSchema: {
           type: 'object',
-          properties: {},
+          properties: {
+            skill: {
+              type: 'string',
+              description: 'Optional: filter snapshots to those tagged with this skill name.',
+            },
+            query: {
+              type: 'string',
+              description: 'Optional: current user query to run keyword fingerprinting. The tool will indicate whether local memory is sufficient or a remote Supabase lookup is advised.',
+            },
+          },
         },
       },
       {
@@ -126,9 +139,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const files = (args as any).files;
         const tags = (args as any).tags;
         const decision = (args as any).decision;
+        const skill = (args as any).skill;
         const state = (args as any).state as SnapshotState | undefined;
 
-        captureSnapshot(type, summary, { files, tags, decision, state });
+        captureSnapshot(type, summary, { files, tags, decision, skill, state });
         return {
           content: [
             {
@@ -140,15 +154,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'snapshot_recover': {
+        const skill = (args as any)?.skill as string | undefined;
+        const query = (args as any)?.query as string | undefined;
         // Capture stdout to return it to the tool caller
         const oldLog = console.log;
         let logOutput = '';
-        console.log = (...args) => {
-          logOutput += args.join(' ') + '\n';
+        console.log = (...logArgs) => {
+          logOutput += logArgs.join(' ') + '\n';
         };
 
         try {
-          recoverContext();
+          recoverContext({ skill, query });
         } finally {
           console.log = oldLog;
         }

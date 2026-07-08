@@ -19,7 +19,20 @@ export interface Snapshot {
   files?: string[];
   decision?: string;
   tags?: string[];
+  /** Cross-skill binding: name of the agent skill this snapshot belongs to */
+  skill?: string;
   state?: SnapshotState;
+}
+
+/** Extracted knowledge item ready to be written to a hot store (e.g. Supabase). */
+export interface RefinedKnowledge {
+  topic: string;
+  decisions: string[];
+  milestones: string[];
+  tags: string[];
+  dateRange: { start: string; end: string };
+  /** Raw JSON suitable for inserting into Supabase knowledge_items */
+  supabasePayload: string;
 }
 
 const AGENT_DIR = '.agent';
@@ -90,7 +103,7 @@ ${projectName}/
 export function captureSnapshot(
   type: SnapshotType,
   summary: string,
-  options: { files?: string[]; tags?: string[]; decision?: string; state?: SnapshotState } = {}
+  options: { files?: string[]; tags?: string[]; decision?: string; skill?: string; state?: SnapshotState } = {}
 ): void {
   // Ensure directory exists
   if (!fs.existsSync(AGENT_DIR)) {
@@ -142,34 +155,23 @@ function compressOldest(lines: string[]): void {
     }
   }
 
-  // Extract key information
-  const dateRangeStart = parsedOldest[0]?.ts ? new Date(parsedOldest[0].ts).toLocaleDateString() : 'Unknown';
-  const dateRangeEnd = parsedOldest[parsedOldest.length - 1]?.ts ? new Date(parsedOldest[parsedOldest.length - 1].ts).toLocaleDateString() : 'Unknown';
+  // --- Hot Distillation: extract high-value knowledge from cold snapshots ---
+  const refined = distillKnowledge(parsedOldest);
 
-  const milestones = parsedOldest.filter(s => s.type === 'milestone');
-  const decisions = parsedOldest.filter(s => s.type === 'decision' || s.decision);
-
-  const allTags = new Set<string>();
-  parsedOldest.forEach(s => {
-    if (s.tags) s.tags.forEach(t => allTags.add(t));
-  });
-
-  const milestoneSummary = milestones.length > 0 
-    ? `完成 ${milestones.length} 個里程碑 (${milestones.slice(0, 5).map(m => m.summary).join(', ')} 等)` 
-    : '無里程碑變更';
-
-  const decisionSummary = decisions.length > 0
-    ? `做出 ${decisions.length} 項關鍵決策 (${decisions.slice(0, 3).map(d => d.decision || d.summary).join(', ')} 等)`
-    : '無重大決策';
-
-  const archiveSummary = `[壓縮歸檔] 期間：${dateRangeStart} ~ ${dateRangeEnd}。工作概述：${milestoneSummary}。${decisionSummary}。`;
+  // Output refined knowledge so the caller / AI agent can pipe it to a hot store (e.g. Supabase)
+  if (refined.decisions.length > 0 || refined.milestones.length > 0) {
+    console.log('\n[Auto-Snapshot] 🔥 Hot Distillation — refined knowledge ready for hot store:');
+    console.log('  Paste the following JSON into your Supabase knowledge_items table, or handle it in your agent:');
+    console.log(refined.supabasePayload);
+    console.log('');
+  }
 
   const archiveSnapshot: Snapshot = {
     ts: new Date().toISOString(),
     type: 'compressed_archive',
     project: getProjectName(),
-    summary: archiveSummary,
-    tags: Array.from(allTags),
+    summary: refined.topic,
+    tags: refined.tags,
   };
 
   const newLines = [
@@ -181,7 +183,99 @@ function compressOldest(lines: string[]): void {
   console.log(`[Auto-Snapshot] Compression completed. Retained latest ${newestLines.length + 1} snapshots.`);
 }
 
-export function recoverContext(): void {
+/**
+ * Distills a batch of cold snapshots into a structured knowledge item
+ * ready to be written to a hot store (Supabase / any vector DB).
+ */
+function distillKnowledge(snapshots: Snapshot[]): RefinedKnowledge {
+  const dateRangeStart = snapshots[0]?.ts ? new Date(snapshots[0].ts).toLocaleDateString() : 'Unknown';
+  const dateRangeEnd = snapshots[snapshots.length - 1]?.ts
+    ? new Date(snapshots[snapshots.length - 1].ts).toLocaleDateString()
+    : 'Unknown';
+
+  const milestones = snapshots
+    .filter(s => s.type === 'milestone')
+    .map(s => s.summary);
+
+  const decisions = snapshots
+    .filter(s => s.type === 'decision' || !!s.decision)
+    .map(s => s.decision || s.summary);
+
+  const allTags = new Set<string>();
+  snapshots.forEach(s => {
+    if (s.tags) s.tags.forEach(t => allTags.add(t));
+  });
+
+  const milestoneSummary = milestones.length > 0
+    ? `完成 ${milestones.length} 個里程碑 (${milestones.slice(0, 5).join(', ')} 等)`
+    : '無里程碑變更';
+
+  const decisionSummary = decisions.length > 0
+    ? `做出 ${decisions.length} 項關鍵決策 (${decisions.slice(0, 3).join(', ')} 等)`
+    : '無重大決策';
+
+  const topic = `[壓縮歸檔] 期間：${dateRangeStart} ~ ${dateRangeEnd}。工作概述：${milestoneSummary}。${decisionSummary}。`;
+
+  const supabasePayload = JSON.stringify({
+    issue: `期間 ${dateRangeStart}~${dateRangeEnd} 工作摘要`,
+    solution: `里程碑：${milestones.join(' | ')} | 決策：${decisions.join(' | ')}`,
+    confidence: 0.8,
+    tags: Array.from(allTags),
+    source: 'auto-snapshot:compression',
+    created_at: new Date().toISOString(),
+  }, null, 2);
+
+  return {
+    topic,
+    decisions,
+    milestones,
+    tags: Array.from(allTags),
+    dateRange: { start: dateRangeStart, end: dateRangeEnd },
+    supabasePayload,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Keyword Fingerprinting: extract candidate keywords from a query string
+// ---------------------------------------------------------------------------
+function extractKeywords(text: string): string[] {
+  // Normalise → split on whitespace / CJK boundaries → strip stop words
+  const stopWords = new Set([
+    'the', 'a', 'an', 'is', 'in', 'on', 'at', 'to', 'and', 'or', 'of',
+    '的', '了', '是', '在', '我', '你', '他', '她', '它', '有', '這', '那',
+  ]);
+
+  return text
+    .toLowerCase()
+    .split(/[\s,，。、！？\-_/\\]+/)
+    .map(w => w.trim())
+    .filter(w => w.length > 1 && !stopWords.has(w));
+}
+
+/**
+ * Compare query keywords against tags from recent snapshots.
+ * Returns true if at least one tag overlaps → skip the remote Supabase lookup.
+ */
+export function isContextSufficientLocally(query: string, recentSnapshots: Snapshot[]): boolean {
+  const queryKeywords = new Set(extractKeywords(query));
+  if (queryKeywords.size === 0) return false;
+
+  const recentTags = new Set<string>();
+  recentSnapshots.forEach(s => {
+    if (s.tags) s.tags.forEach(t => recentTags.add(t.toLowerCase()));
+  });
+
+  // If any query keyword overlaps with local tags, local memory is sufficient
+  for (const kw of queryKeywords) {
+    if (recentTags.has(kw)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// recoverContext — supports optional skill filter and keyword fingerprinting
+// ---------------------------------------------------------------------------
+export function recoverContext(options: { skill?: string; query?: string } = {}): void {
   if (!fs.existsSync(AGENT_DIR)) {
     console.log('No .agent directory found. Please run init first.');
     return;
@@ -195,31 +289,45 @@ export function recoverContext(): void {
   }
 
   let recentSnapshotsText = '無近期快照記錄。';
+  let locallyAdequate = false;
+
   if (fs.existsSync(SNAPSHOT_FILE)) {
-    const lines = fs.readFileSync(SNAPSHOT_FILE, 'utf8').trim().split('\n');
-    const validSnapshots: Snapshot[] = [];
-    for (const line of lines.reverse()) {
+    const rawLines = fs.readFileSync(SNAPSHOT_FILE, 'utf8').trim().split('\n');
+
+    // Parse all snapshots (reverse order = newest first)
+    const allParsed: Snapshot[] = [];
+    for (const line of [...rawLines].reverse()) {
       try {
-        if (line.trim()) {
-          validSnapshots.push(JSON.parse(line));
-        }
-      } catch (e) {
-        // Ignore
+        if (line.trim()) allParsed.push(JSON.parse(line));
+      } catch {
+        // Ignore corrupted lines
       }
-      if (validSnapshots.length >= 10) break;
+    }
+
+    // --- Cross-Skill Binding: filter by skill if requested ---
+    const filtered = options.skill
+      ? allParsed.filter(s => !s.skill || s.skill === options.skill)
+      : allParsed;
+
+    const validSnapshots = filtered.slice(0, 10);
+
+    // --- Keyword Fingerprinting: decide if remote lookup is necessary ---
+    if (options.query && validSnapshots.length > 0) {
+      locallyAdequate = isContextSufficientLocally(options.query, validSnapshots);
     }
 
     if (validSnapshots.length > 0) {
-      recentSnapshotsText = validSnapshots
+      recentSnapshotsText = [...validSnapshots]
         .reverse()
         .map(s => {
           const time = new Date(s.ts).toLocaleTimeString();
-          let detail = `[${s.type}] ${time}: ${s.summary}`;
+          let detail = `[${s.type}${s.skill ? `@${s.skill}` : ''}] ${time}: ${s.summary}`;
           if (s.decision) detail += ` (決策: ${s.decision})`;
+          if (s.tags?.length) detail += `\n  🏷️ tags: ${s.tags.join(', ')}`;
           if (s.state) {
-            detail += `\n  - 已完成: ${s.state.completed.join(', ') || '無'}`;
-            detail += `\n  - 進行中: ${s.state.in_progress.join(', ') || '無'}`;
-            detail += `\n  - 下步任務: ${s.state.next_action || '無'}`;
+            detail += `\n  ✅ 已完成: ${s.state.completed.join(', ') || '無'}`;
+            detail += `\n  🔄 進行中: ${s.state.in_progress.join(', ') || '無'}`;
+            detail += `\n  ➡️  下步任務: ${s.state.next_action || '無'}`;
           }
           return detail;
         })
@@ -227,10 +335,18 @@ export function recoverContext(): void {
     }
   }
 
+  const fingerprintNote = options.query
+    ? locallyAdequate
+      ? '✅ 本地記憶覆蓋查詢，無需查詢遠端知識庫。'
+      : '⚠️  本地記憶不足，建議查詢遠端 Supabase Memory Engine。'
+    : '';
+
+  const skillNote = options.skill ? `\n🔧 **已篩選 Skill**: \`${options.skill}\`` : '';
+
   const output = `=========================================
 ## 📋 上下文已恢復 (Prompt Context Ready)
 =========================================
-
+${skillNote}
 ${contextMarkdown}
 
 ---
@@ -240,6 +356,8 @@ ${contextMarkdown}
 \`\`\`text
 ${recentSnapshotsText}
 \`\`\`
+
+${fingerprintNote}
 
 ---
 *你可以直接將此上下文複製提供給新對話中的 AI 助理。*
