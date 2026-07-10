@@ -38,6 +38,7 @@ export interface RefinedKnowledge {
 const AGENT_DIR = '.agent';
 const SNAPSHOT_FILE = path.join(AGENT_DIR, 'SNAPSHOT.jsonl');
 const CONTEXT_FILE = path.join(AGENT_DIR, 'PROJECT_CONTEXT.md');
+const LOCAL_CACHE_FILE = path.join(AGENT_DIR, 'LOCAL_CACHE.json');
 
 function getProjectName(): string {
   try {
@@ -133,16 +134,31 @@ export function checkAndCompress(): void {
   const content = fs.readFileSync(SNAPSHOT_FILE, 'utf8').trim();
   if (!content) return;
 
-  const lines = content.split('\n');
-  if (lines.length <= 200) return;
+  // 1. Dynamic Compression Thresholds: Trigger based on character count (>50,000 chars)
+  const MAX_CHARS = 50000;
+  const TARGET_CHARS = 15000;
+  
+  if (content.length <= MAX_CHARS) return;
 
-  console.log(`[Auto-Snapshot] Snapshot count (${lines.length}) exceeds limit. Compressing oldest 150 entries...`);
-  compressOldest(lines);
+  const lines = content.split('\n');
+  console.log(`[Auto-Snapshot] Snapshot size (${content.length} chars) exceeds limit. Compressing to reduce size...`);
+  compressToTargetSize(lines, TARGET_CHARS);
 }
 
-function compressOldest(lines: string[]): void {
-  const oldestLines = lines.slice(0, 150);
-  const newestLines = lines.slice(150);
+function compressToTargetSize(lines: string[], targetChars: number): void {
+  let splitIndex = 0;
+  let remainingChars = lines.join('\n').length;
+  
+  // Find the split point so that remaining newer lines fit within TARGET_CHARS
+  while (remainingChars > targetChars && splitIndex < lines.length - 1) {
+    remainingChars -= lines[splitIndex].length + 1; // +1 for newline
+    splitIndex++;
+  }
+  
+  if (splitIndex === 0) return; // shouldn't happen unless everything is already smaller
+
+  const oldestLines = lines.slice(0, splitIndex);
+  const newestLines = lines.slice(splitIndex);
 
   const parsedOldest: Snapshot[] = [];
   for (const line of oldestLines) {
@@ -155,8 +171,13 @@ function compressOldest(lines: string[]): void {
     }
   }
 
+  if (parsedOldest.length === 0) return;
+
   // --- Hot Distillation: extract high-value knowledge from cold snapshots ---
   const refined = distillKnowledge(parsedOldest);
+
+  // 4. Local SQLite / LevelDB Fallback Cache (using local JSON store for minimal dependencies)
+  saveToLocalCache(refined);
 
   // Output refined knowledge so the caller / AI agent can pipe it to a hot store (e.g. Supabase)
   if (refined.decisions.length > 0 || refined.milestones.length > 0) {
@@ -183,6 +204,23 @@ function compressOldest(lines: string[]): void {
   console.log(`[Auto-Snapshot] Compression completed. Retained latest ${newestLines.length + 1} snapshots.`);
 }
 
+function saveToLocalCache(refined: RefinedKnowledge): void {
+  let cache: any[] = [];
+  try {
+    if (fs.existsSync(LOCAL_CACHE_FILE)) {
+      cache = JSON.parse(fs.readFileSync(LOCAL_CACHE_FILE, 'utf8'));
+    }
+  } catch (e) {
+    // Ignore cache read error
+  }
+  cache.push({
+    ...refined,
+    cached_at: new Date().toISOString()
+  });
+  fs.writeFileSync(LOCAL_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf8');
+  console.log(`[Auto-Snapshot] Refined knowledge saved to local fallback cache: ${LOCAL_CACHE_FILE}`);
+}
+
 /**
  * Distills a batch of cold snapshots into a structured knowledge item
  * ready to be written to a hot store (Supabase / any vector DB).
@@ -206,15 +244,8 @@ function distillKnowledge(snapshots: Snapshot[]): RefinedKnowledge {
     if (s.tags) s.tags.forEach(t => allTags.add(t));
   });
 
-  const milestoneSummary = milestones.length > 0
-    ? `完成 ${milestones.length} 個里程碑 (${milestones.slice(0, 5).join(', ')} 等)`
-    : '無里程碑變更';
-
-  const decisionSummary = decisions.length > 0
-    ? `做出 ${decisions.length} 項關鍵決策 (${decisions.slice(0, 3).join(', ')} 等)`
-    : '無重大決策';
-
-  const topic = `[壓縮歸檔] 期間：${dateRangeStart} ~ ${dateRangeEnd}。工作概述：${milestoneSummary}。${decisionSummary}。`;
+  // 3. Structured Markdown Tables: Modifying the output format for better LLM readability
+  const topic = `\n### 🗜️ 壓縮歸檔 (${dateRangeStart} ~ ${dateRangeEnd})\n\n| 項目 | 數量 | 摘要 |\n| --- | --- | --- |\n| 🏆 里程碑 | ${milestones.length} | ${milestones.slice(0, 3).join('<br>') || '無'} |\n| ⚖️ 決策 | ${decisions.length} | ${decisions.slice(0, 3).join('<br>') || '無'} |\n`;
 
   const supabasePayload = JSON.stringify({
     issue: `期間 ${dateRangeStart}~${dateRangeEnd} 工作摘要`,
@@ -252,6 +283,28 @@ function extractKeywords(text: string): string[] {
     .filter(w => w.length > 1 && !stopWords.has(w));
 }
 
+// 2. Hybrid / Semantic Local Fingerprint Matching: Levenshtein distance for fuzzy matching
+function levenshteinDistance(a: string, b: string): number {
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          Math.min(matrix[i][j - 1] + 1, // insertion
+                   matrix[i - 1][j] + 1) // deletion
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
 /**
  * Compare query keywords against tags from recent snapshots.
  * Returns true if at least one tag overlaps → skip the remote Supabase lookup.
@@ -265,9 +318,39 @@ export function isContextSufficientLocally(query: string, recentSnapshots: Snaps
     if (s.tags) s.tags.forEach(t => recentTags.add(t.toLowerCase()));
   });
 
+  // Synonyms map to increase local cache hit rate
+  const synonymMap: Record<string, string[]> = {
+    'bug': ['fix', 'issue', 'error', 'defect', '錯誤', '修復'],
+    'feature': ['feat', 'enhancement', 'addition', '功能', '新增'],
+    'performance': ['perf', 'speed', 'optimization', '效能', '優化'],
+    'refactor': ['clean', 'restructure', '重構'],
+    'test': ['spec', 'testing', '測試'],
+    'doc': ['readme', 'documentation', '文件'],
+  };
+
   // If any query keyword overlaps with local tags, local memory is sufficient
   for (const kw of queryKeywords) {
     if (recentTags.has(kw)) return true;
+    
+    // Check Synonyms
+    if (synonymMap[kw]) {
+      for (const syn of synonymMap[kw]) {
+        if (recentTags.has(syn)) return true;
+      }
+    } else {
+      // Check Reverse Synonyms
+      for (const [key, synonyms] of Object.entries(synonymMap)) {
+        if (synonyms.includes(kw) && recentTags.has(key)) return true;
+      }
+    }
+
+    // Check Fuzzy Match (dist <= 1 or 2 depending on length)
+    for (const tag of recentTags) {
+      if (tag.includes(kw) || kw.includes(tag)) return true; // Substring match
+      if (kw.length >= 4 && tag.length >= 4) {
+        if (levenshteinDistance(kw, tag) <= 1) return true; // 1-character typo tolerance
+      }
+    }
   }
   return false;
 }
