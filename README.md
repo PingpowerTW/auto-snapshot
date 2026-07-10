@@ -44,7 +44,7 @@
 | **向量資料庫依賴** | ChromaDB、Pinecone 等需要複雜安裝與維護 | 純 JSONL 文字檔，零外部依賴 |
 | **RAM 佔用過高** | 語意搜尋模型動輒 500MB+ | 接近零資源消耗 |
 | **工具鏈綁定** | 多數方案僅限單一 Agent 或 IDE | MCP 標準介面，相容所有主流 AI 助理 |
-| **Context 膨脹** | 快照無限累積導致 Token 爆炸 | 情節壓縮演算法自動管理，硬上限 200 條 |
+| **Context 膨脹** | 快照無限累積導致 Token 爆炸 | 動態情節壓縮演算法自動管理 Token/字元上限，避免超載 |
 
 ### 核心設計原則
 
@@ -69,11 +69,12 @@
 
 ### 🗜️ 情節壓縮（Episodic Compression）
 
-當 `SNAPSHOT.jsonl` 超過 200 條時，自動執行三步驟壓縮循環：
+當 `SNAPSHOT.jsonl` 字元數超過 50,000 字元時，會動態執行壓縮循環（目標縮減至 15,000 字元）：
 
-1. **萃取最舊 150 條**中的里程碑摘要、技術決策、標籤集合
-2. **精煉蒸餾**：生成 Supabase-ready 的 JSON Payload，供 Agent 決定是否寫入長期記憶
-3. **壓縮歸檔**：生成 1 條 `compressed_archive` 快照，保留最新 50 條，刪除原始 150 條
+1. **萃取舊紀錄**：提取最舊快照中的里程碑摘要、技術決策、標籤集合。
+2. **精煉蒸餾與 Markdown 表格**：生成結構化 Markdown 表格與 JSON Payload。
+3. **本地備援快取**：資料預設寫入 `.agent/LOCAL_CACHE.json` 備援，防止斷線。
+4. **壓縮歸檔**：生成 1 條 `compressed_archive` 快照。
 
 ### 🎯 跨 Skill 記憶綁定（Cross-Skill Binding）
 
@@ -88,9 +89,9 @@ auto-snapshot capture decision "選用 Firebase Auth 而非自建 JWT" \
 auto-snapshot recover --skill firebase-rules
 ```
 
-### 🔍 關鍵字指紋比對（Keyword Fingerprinting）
+### 🔍 語意模糊指紋比對（Semantic Fingerprinting）
 
-在 `recover` 時傳入 `--query` 參數，系統會將查詢詞與本地快照的 `tags` 進行比對，即時判斷本地記憶是否足夠，避免不必要的遠端知識庫查詢：
+在 `recover` 時傳入 `--query` 參數，系統會將查詢詞與快照進行比對。系統支援**同義詞映射與 Levenshtein 模糊比對**，大幅提升命中率，即時判斷本地記憶是否足夠：
 
 ```
 ✅ 本地記憶覆蓋查詢，無需查詢遠端知識庫。
@@ -184,7 +185,7 @@ auto-snapshot/
        │  (最多 200 條)       │
        └──────────┬───────────┘
                   │
-           超過 200 條觸發
+           字元數超過 50,000 觸發
                   │
                   ▼
        ┌──────────────────────────────────┐
@@ -222,7 +223,7 @@ auto-snapshot/
 ### 情節壓縮演算法細節
 
 ```
-輸入：SNAPSHOT.jsonl（N 條，N > 200）
+輸入：SNAPSHOT.jsonl（字元數 > 50,000）
 
 Step 1: 分割
   oldest = lines[0 : 150]    ← 待壓縮
@@ -692,7 +693,7 @@ Every time a new AI chat session opens, the assistant starts with complete amnes
 | **Vector DB Dependency** | ChromaDB, Pinecone require complex setup and maintenance | Pure JSONL text file, zero external dependencies |
 | **High RAM Usage** | Semantic search models consume 500MB+ of memory | Near-zero resource consumption |
 | **Toolchain Lock-in** | Most solutions only work with a single agent or IDE | MCP standard interface — compatible with all major AI assistants |
-| **Context Bloat** | Unlimited snapshot accumulation leads to Token explosion | Episodic compression algorithm auto-manages hard limit of 200 entries |
+| **Context Bloat** | Unlimited snapshot accumulation leads to Token explosion | Dynamic episodic compression auto-manages Token/character limits |
 
 ### Core Design Principles
 
@@ -717,11 +718,12 @@ Every time a new AI chat session opens, the assistant starts with complete amnes
 
 ### 🗜️ Episodic Compression
 
-When `SNAPSHOT.jsonl` exceeds 200 entries, a three-step compression cycle executes automatically:
+When `SNAPSHOT.jsonl` exceeds 50,000 characters, it triggers dynamic compression (target size: 15,000 chars):
 
-1. **Extract the oldest 150 entries**: Collects milestone summaries, technical decisions, and tag sets
-2. **Hot Distillation**: Generates a Supabase-ready JSON payload for the agent to optionally write to long-term memory
-3. **Archive and compact**: Generates one `compressed_archive` snapshot, retains the newest 50 entries, removes the original 150
+1. **Extract Oldest Entries**: Collects milestones, decisions, and tags.
+2. **Hot Distillation & Markdown Tables**: Generates structural markdown tables and JSON payload.
+3. **Local Fallback Cache**: Saves data to `.agent/LOCAL_CACHE.json` for offline backup.
+4. **Archive and compact**: Condenses entries into a single `compressed_archive`.
 
 ### 🎯 Cross-Skill Binding
 
@@ -736,9 +738,9 @@ auto-snapshot capture decision "Use Firebase Auth instead of custom JWT" \
 auto-snapshot recover --skill firebase-rules
 ```
 
-### 🔍 Keyword Fingerprinting
+### 🔍 Semantic Fingerprinting
 
-Pass `--query` during `recover` to compare the query terms against local snapshot `tags`. The system immediately indicates whether local memory is sufficient, avoiding unnecessary remote knowledge base queries:
+Pass `--query` during `recover` to compare query terms against snapshots. The system uses **synonym mapping and Levenshtein fuzzy matching** to maximize cache hits, avoiding unnecessary remote queries:
 
 ```
 ✅ Local memory covers the query — no remote lookup needed.
@@ -862,7 +864,7 @@ New Session Recovery Flow:
 ### Episodic Compression Algorithm
 
 ```
-Input: SNAPSHOT.jsonl (N entries, N > 200)
+Input: SNAPSHOT.jsonl (Chars > 50,000)
 
 Step 1: Partition
   oldest = lines[0 : 150]    ← to compress
