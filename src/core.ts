@@ -267,20 +267,49 @@ function distillKnowledge(snapshots: Snapshot[]): RefinedKnowledge {
 }
 
 // ---------------------------------------------------------------------------
-// Keyword Fingerprinting: extract candidate keywords from a query string
+// Engram Normalized N-gram Fingerprinting & YOCO SWA Bounded Replay
 // ---------------------------------------------------------------------------
+/** Default YOCO SWA Bounded Replay limit: Window (5) + Two-Strike Rollback Buffer (2) = 7 */
+export const SWA_BOUNDED_REPLAY_LIMIT = 7;
+
+export function normalizeEngramText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[\s\t\r\n]+/g, ' ')
+    .trim();
+}
+
 function extractKeywords(text: string): string[] {
-  // Normalise → split on whitespace / CJK boundaries → strip stop words
   const stopWords = new Set([
     'the', 'a', 'an', 'is', 'in', 'on', 'at', 'to', 'and', 'or', 'of',
     '的', '了', '是', '在', '我', '你', '他', '她', '它', '有', '這', '那',
   ]);
 
-  return text
-    .toLowerCase()
-    .split(/[\s,，。、！？\-_/\\]+/)
+  const normalized = normalizeEngramText(text);
+  const tokens = normalized
+    .split(/[\s,，。、！？\-_/\\:：;；()（）[\]【】]+/)
     .map(w => w.trim())
     .filter(w => w.length > 1 && !stopWords.has(w));
+
+  const features = new Set<string>(tokens);
+  // Add CJK 2-grams (len >= 3) and general 3-grams (len >= 4) for morphological resilience (Engram pattern)
+  for (const tok of tokens) {
+    const hasCjk = /[\u4e00-\u9fff]/.test(tok);
+    if (hasCjk && tok.length >= 3) {
+      for (let i = 0; i <= tok.length - 2; i++) {
+        features.add(tok.slice(i, i + 2));
+      }
+    }
+    if (tok.length >= 4) {
+      for (let i = 0; i <= tok.length - 3; i++) {
+        features.add(tok.slice(i, i + 3));
+      }
+    }
+  }
+  return Array.from(features);
 }
 
 // 2. Hybrid / Semantic Local Fingerprint Matching: Levenshtein distance for fuzzy matching
@@ -306,16 +335,25 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 /**
- * Compare query keywords against tags from recent snapshots.
- * Returns true if at least one tag overlaps → skip the remote Supabase lookup.
+ * Compare query keywords/ngrams against normalized tags & summaries from recent snapshots.
+ * Returns true if at least one feature overlaps → skip the remote Supabase lookup.
  */
 export function isContextSufficientLocally(query: string, recentSnapshots: Snapshot[]): boolean {
   const queryKeywords = new Set(extractKeywords(query));
   if (queryKeywords.size === 0) return false;
 
-  const recentTags = new Set<string>();
+  const localFeatures = new Set<string>();
   recentSnapshots.forEach(s => {
-    if (s.tags) s.tags.forEach(t => recentTags.add(t.toLowerCase()));
+    if (s.tags) {
+      s.tags.forEach(t => {
+        const normTag = normalizeEngramText(t);
+        if (normTag) localFeatures.add(normTag);
+        extractKeywords(t).forEach(k => localFeatures.add(k));
+      });
+    }
+    if (s.summary) {
+      extractKeywords(s.summary).forEach(k => localFeatures.add(k));
+    }
   });
 
   // Synonyms map to increase local cache hit rate
@@ -330,22 +368,22 @@ export function isContextSufficientLocally(query: string, recentSnapshots: Snaps
 
   // If any query keyword overlaps with local tags, local memory is sufficient
   for (const kw of queryKeywords) {
-    if (recentTags.has(kw)) return true;
+    if (localFeatures.has(kw)) return true;
     
     // Check Synonyms
     if (synonymMap[kw]) {
       for (const syn of synonymMap[kw]) {
-        if (recentTags.has(syn)) return true;
+        if (localFeatures.has(syn)) return true;
       }
     } else {
       // Check Reverse Synonyms
       for (const [key, synonyms] of Object.entries(synonymMap)) {
-        if (synonyms.includes(kw) && recentTags.has(key)) return true;
+        if (synonyms.includes(kw) && localFeatures.has(key)) return true;
       }
     }
 
     // Check Fuzzy Match (dist <= 1 or 2 depending on length)
-    for (const tag of recentTags) {
+    for (const tag of localFeatures) {
       if (tag.includes(kw) || kw.includes(tag)) return true; // Substring match
       if (kw.length >= 4 && tag.length >= 4) {
         if (levenshteinDistance(kw, tag) <= 1) return true; // 1-character typo tolerance
@@ -356,13 +394,19 @@ export function isContextSufficientLocally(query: string, recentSnapshots: Snaps
 }
 
 // ---------------------------------------------------------------------------
-// recoverContext — supports optional skill filter and keyword fingerprinting
+// recoverContext — supports optional skill filter, Engram fingerprinting,
+// and YOCO SWA Bounded Replay (default 7 = Window 5 + Rollback 2)
 // ---------------------------------------------------------------------------
-export function recoverContext(options: { skill?: string; query?: string } = {}): void {
+export function recoverContext(options: { skill?: string; query?: string; keep?: number } = {}): void {
   if (!fs.existsSync(AGENT_DIR)) {
     console.log('No .agent directory found. Please run init first.');
     return;
   }
+
+  const rawKeep = Number(options.keep);
+  const keepLimit = Number.isFinite(rawKeep) && rawKeep > 0
+    ? Math.min(Math.max(1, Math.floor(rawKeep)), 50)
+    : SWA_BOUNDED_REPLAY_LIMIT;
 
   let contextMarkdown = '';
   if (fs.existsSync(CONTEXT_FILE)) {
@@ -392,11 +436,11 @@ export function recoverContext(options: { skill?: string; query?: string } = {})
       ? allParsed.filter(s => !s.skill || s.skill === options.skill)
       : allParsed;
 
-    const validSnapshots = filtered.slice(0, 10);
+    const validSnapshots = filtered.slice(0, keepLimit);
 
-    // --- Keyword Fingerprinting: decide if remote lookup is necessary ---
-    if (options.query && validSnapshots.length > 0) {
-      locallyAdequate = isContextSufficientLocally(options.query, validSnapshots);
+    // --- Engram Fingerprinting: decide if remote lookup is necessary ---
+    if (options.query && filtered.length > 0) {
+      locallyAdequate = isContextSufficientLocally(options.query, filtered.slice(0, 15));
     }
 
     if (validSnapshots.length > 0) {
@@ -434,7 +478,7 @@ ${contextMarkdown}
 
 ---
 
-## 🕒 近期快照歷史 (Last 10 entries)
+## 🕒 近期快照歷史 (SWA Bounded Replay: Last ${keepLimit} entries)
 
 \`\`\`text
 ${recentSnapshotsText}

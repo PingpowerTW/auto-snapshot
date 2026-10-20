@@ -87,7 +87,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'snapshot_recover',
-        description: 'Read and display the current PROJECT_CONTEXT.md and the last 10 snapshots. Supports skill filtering and keyword fingerprinting to determine if a remote knowledge-base lookup is needed.',
+        description: 'Read and display PROJECT_CONTEXT.md and recent snapshots via YOCO SWA Bounded Replay (default 7 = Window 5 + Rollback 2). Supports skill filtering and Engram normalized fingerprinting.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -97,7 +97,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             query: {
               type: 'string',
-              description: 'Optional: current user query to run keyword fingerprinting. The tool will indicate whether local memory is sufficient or a remote Supabase lookup is advised.',
+              description: 'Optional: current user query to run Engram normalized fingerprinting. The tool will indicate whether local memory is sufficient or a remote Supabase lookup is advised.',
+            },
+            keep: {
+              type: 'number',
+              description: 'Optional: bounded replay suffix length (1..50, default 7).',
             },
           },
         },
@@ -156,6 +160,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'snapshot_recover': {
         const skill = (args as any)?.skill as string | undefined;
         const query = (args as any)?.query as string | undefined;
+        const keep = (args as any)?.keep as number | undefined;
         // Capture stdout to return it to the tool caller
         const oldLog = console.log;
         let logOutput = '';
@@ -164,7 +169,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
         try {
-          recoverContext({ skill, query });
+          recoverContext({ skill, query, keep });
         } finally {
           console.log = oldLog;
         }

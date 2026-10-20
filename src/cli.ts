@@ -73,11 +73,12 @@ program
 
 program
   .command('recover')
-  .description('Recover project context and display last 10 snapshots')
+  .description('Recover project context via YOCO SWA Bounded Replay (default 7 = Window 5 + Rollback 2)')
   .option('-s, --skill <skill>', 'Filter snapshots by a specific agent skill')
-  .option('-q, --query <query>', 'A query string for keyword fingerprinting (decides if remote lookup is needed)')
+  .option('-q, --query <query>', 'A query string for Engram normalized fingerprinting (decides if remote lookup is needed)')
+  .option('-k, --keep <number>', 'Bounded replay suffix length (default: 7)', '7')
   .action((options) => {
-    recoverContext({ skill: options.skill, query: options.query });
+    recoverContext({ skill: options.skill, query: options.query, keep: parseInt(options.keep, 10) || 7 });
   });
 
 program.parse();
