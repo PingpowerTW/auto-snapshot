@@ -89,9 +89,21 @@ auto-snapshot capture decision "選用 Firebase Auth 而非自建 JWT" \
 auto-snapshot recover --skill firebase-rules
 ```
 
-### 🔍 語意模糊指紋比對（Semantic Fingerprinting）
+### ⚡ YOCO SWA 有界後綴重播（SWA Bounded Replay）
 
-在 `recover` 時傳入 `--query` 參數，系統會將查詢詞與快照進行比對。系統支援**同義詞映射與 Levenshtein 模糊比對**，大幅提升命中率，即時判斷本地記憶是否足夠：
+借鑑 DeepSeek YOCO 架構與滑動視窗注意機制（Sliding Window Attention），在 `recover` 時透過 `--keep <limit>` 限制重播深度（預設 7 筆 = 5 筆活躍視窗 + 2 筆兩振回退緩衝；可指定 1~50）：
+
+```bash
+# 預設恢復最近 7 筆快照（O(1) 常數記憶恢復開銷）
+auto-snapshot recover
+
+# 自訂恢復最近 3 筆快照
+auto-snapshot recover --keep 3
+```
+
+### 🧬 Engram 正規化指紋匹配（Engram Fingerprinting）
+
+在 `recover` 時傳入 `--query` 參數，系統會將查詢詞與快照進行比對。系統支援 **Unicode NFKC/NFD 正規化、CJK 2-gram / 通用 3-gram 切分、同義詞映射與 Levenshtein 模糊比對**，大幅提升命中率，即時判斷本地記憶是否足夠：
 
 ```
 ✅ 本地記憶覆蓋查詢，無需查詢遠端知識庫。
@@ -738,9 +750,21 @@ auto-snapshot capture decision "Use Firebase Auth instead of custom JWT" \
 auto-snapshot recover --skill firebase-rules
 ```
 
-### 🔍 Semantic Fingerprinting
+### ⚡ YOCO SWA Bounded Replay
 
-Pass `--query` during `recover` to compare query terms against snapshots. The system uses **synonym mapping and Levenshtein fuzzy matching** to maximize cache hits, avoiding unnecessary remote queries:
+Inspired by the DeepSeek YOCO architecture and Sliding Window Attention (SWA), `recover` supports `--keep <limit>` to bound context recovery depth (default: 7 snapshots = 5 active window + 2 rollback buffer; configurable between 1 and 50):
+
+```bash
+# Default recovery of recent 7 snapshots (O(1) constant replay overhead)
+auto-snapshot recover
+
+# Custom limit to recent 3 snapshots
+auto-snapshot recover --keep 3
+```
+
+### 🧬 Engram Normalized N-gram Fingerprinting
+
+Pass `--query` during `recover` to compare query terms against snapshots. The system uses **Unicode NFKC/NFD normalization, CJK 2-gram / general 3-gram sub-piece extraction, synonym mapping, and Levenshtein fuzzy matching** to maximize cache hits, avoiding unnecessary remote queries:
 
 ```
 ✅ Local memory covers the query — no remote lookup needed.
