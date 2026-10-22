@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from 'commander';
 import { initProject, captureSnapshot, checkAndCompress, recoverContext, SnapshotType, SnapshotState } from './core.js';
 

@@ -13,6 +13,15 @@ import {
   type Snapshot,
 } from './core.js';
 
+// npm cmd-shim 僅在 bin 有 shebang 時才經 node 執行；缺失會讓 Windows CLI 靜默 no-op（exit 0、不寫快照）
+test('every package.json bin starts with node shebang (npm cmd-shim contract)', () => {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  const { bin } = JSON.parse(fs.readFileSync(pkgUrl, 'utf8'));
+  for (const rel of typeof bin === 'string' ? [bin] : Object.values<string>(bin)) {
+    assert.ok(fs.readFileSync(new URL(rel, pkgUrl), 'utf8').startsWith('#!/usr/bin/env node'), rel);
+  }
+});
+
 test('normalizeEngramText normalizes NFKC fullwidth, strips NFD accents, lowercases, and collapses whitespace', () => {
   assert.equal(normalizeEngramText('  Ｃafé\t\n  ＲÉSUMÉ  '), 'cafe resume');
   assert.equal(normalizeEngramText('DeepSeek-V4.1  Flash'), 'deepseek-v4.1 flash');
