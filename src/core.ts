@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export type SnapshotType = 'milestone' | 'phase_switch' | 'handoff' | 'periodic' | 'decision' | 'compressed_archive';
+export type SnapshotType = 'milestone' | 'phase_switch' | 'handoff' | 'periodic' | 'decision' | 'compressed_archive' | 'failure_reflection';
 
 export interface SnapshotState {
   completed: string[];
@@ -22,6 +22,8 @@ export interface Snapshot {
   /** Cross-skill binding: name of the agent skill this snapshot belongs to */
   skill?: string;
   state?: SnapshotState;
+  /** Reflexion verbal memory trace (INV_VERIFY_06) */
+  reflexion?: string;
 }
 
 /** Extracted knowledge item ready to be written to a hot store (e.g. Supabase). */
@@ -351,8 +353,9 @@ export function isContextSufficientLocally(query: string, recentSnapshots: Snaps
         extractKeywords(t).forEach(k => localFeatures.add(k));
       });
     }
-    if (s.summary) {
-      extractKeywords(s.summary).forEach(k => localFeatures.add(k));
+    const summaryText = s.summary || (s as any).title || '';
+    if (summaryText) {
+      extractKeywords(summaryText).forEach(k => localFeatures.add(k));
     }
   });
 
@@ -436,20 +439,42 @@ export function recoverContext(options: { skill?: string; query?: string; keep?:
       ? allParsed.filter(s => !s.skill || s.skill === options.skill)
       : allParsed;
 
-    const validSnapshots = filtered.slice(0, keepLimit);
-
-    // --- Engram Fingerprinting: decide if remote lookup is necessary ---
+    // --- CRAG correction: recall up to 2 older snapshots that out-score the SWA window,
+    // evicting the oldest window entries so total count strictly respects keepLimit.
+    let validSnapshots = filtered.slice(0, keepLimit);
     if (options.query && filtered.length > 0) {
       locallyAdequate = isContextSufficientLocally(options.query, filtered.slice(0, 15));
+      const qTokens = extractKeywords(options.query);
+      const score = (s: Snapshot) => {
+        const sText = normalizeEngramText(`${s.summary || (s as any).title || ''} ${s.decision || ''} ${(s.tags || []).join(' ')} ${s.reflexion || ''}`);
+        return qTokens.filter(qt => sText.includes(qt)).length;
+      };
+      const windowBest = Math.max(0, ...validSnapshots.map(score));
+      const maxOlder = Math.max(0, Math.min(2, keepLimit - 1));
+      const recalled = filtered
+        .map((s, i) => ({ s, i, sc: score(s) }))
+        .filter(x => x.i >= keepLimit && x.sc > windowBest)
+        .sort((a, b) => b.sc - a.sc || a.i - b.i)
+        .slice(0, maxOlder)
+        .sort((a, b) => a.i - b.i)
+        .map(x => x.s);
+      if (recalled.length > 0) {
+        validSnapshots = [...filtered.slice(0, keepLimit - recalled.length), ...recalled];
+      }
     }
+
 
     if (validSnapshots.length > 0) {
       recentSnapshotsText = [...validSnapshots]
         .reverse()
         .map(s => {
-          const time = new Date(s.ts).toLocaleTimeString();
-          let detail = `[${s.type}${s.skill ? `@${s.skill}` : ''}] ${time}: ${s.summary}`;
+          const rawTs = s.ts || (s as any).timestamp || '';
+          const parsedDate = rawTs ? new Date(rawTs) : null;
+          const time = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate.toLocaleTimeString() : 'Unknown';
+          const summaryText = s.summary || (s as any).title || '';
+          let detail = `[${s.type}${s.skill ? `@${s.skill}` : ''}] ${time}: ${summaryText}`;
           if (s.decision) detail += ` (決策: ${s.decision})`;
+          if (s.reflexion) detail += `\n  💡 Reflexion: ${s.reflexion}`;
           if (s.tags?.length) detail += `\n  🏷️ tags: ${s.tags.join(', ')}`;
           if (s.state) {
             detail += `\n  ✅ 已完成: ${s.state.completed.join(', ') || '無'}`;

@@ -79,6 +79,31 @@ test('recoverContext enforces SWA_BOUNDED_REPLAY_LIMIT (7) by default and clamps
       assert.equal(keep2Out.includes('step-10-marker'), true);
       assert.equal(keep2Out.includes('step-9-marker'), true);
       assert.equal(keep2Out.includes('step-8-marker'), false);
+
+      // Querying older snapshot (step-2-marker) recalls it while preserving newest step-10-marker in chronological order
+      logs.length = 0;
+      recoverContext({ query: 'step-2-marker tag2' });
+      const cragOut = logs.join('\n');
+      const idx2 = cragOut.indexOf('step-2-marker');
+      const idx10 = cragOut.indexOf('step-10-marker');
+      assert.ok(idx2 !== -1, 'older matching snapshot step-2-marker should be recalled');
+      assert.ok(idx10 !== -1, 'latest snapshot step-10-marker must not be dropped');
+      assert.ok(idx2 < idx10, 'chronological order (older before newer) must be preserved');
+      assert.equal(cragOut.includes('step-4-marker'), false, 'must evict oldest window entry to respect keep=7 bound');
+      assert.equal(cragOut.includes('step-5-marker'), true, 'must keep remaining 6 newest entries');
+
+      // Legacy schema fallback: timestamp + title instead of ts + summary must not render Invalid Date: undefined
+      fs.appendFileSync(
+        path.join('.agent', 'SNAPSHOT.jsonl'),
+        JSON.stringify({ type: 'decision', title: 'legacy-title-marker', decision: 'legacy-dec', timestamp: '2026-10-10T19:00:00Z' }) + '\n',
+        'utf8'
+      );
+      logs.length = 0;
+      recoverContext({ keep: 3 });
+      const legacyOut = logs.join('\n');
+      assert.equal(legacyOut.includes('legacy-title-marker'), true);
+      assert.equal(legacyOut.includes('Invalid Date'), false);
+      assert.equal(legacyOut.includes('undefined'), false);
     } finally {
       console.log = origLog;
     }
