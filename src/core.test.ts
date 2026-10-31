@@ -104,6 +104,32 @@ test('recoverContext enforces SWA_BOUNDED_REPLAY_LIMIT (7) by default and clamps
       assert.equal(legacyOut.includes('legacy-title-marker'), true);
       assert.equal(legacyOut.includes('Invalid Date'), false);
       assert.equal(legacyOut.includes('undefined'), false);
+
+      // Workspace Path Pinning (DeepSeek-TUI compaction.rs): older snapshot referencing an existing workspace file
+      // receives a +1 tie-breaker boost over window entries with equal keyword hits; non-existent file does not
+      const nonExistentSnap = JSON.stringify({
+        ts: '2026-09-30T00:00:00Z',
+        type: 'milestone',
+        project: 'swa-test',
+        summary: 'shared-kw missing-file entry',
+        files: ['ghost-does-not-exist.ts'],
+      });
+      fs.writeFileSync('pinned-anchor.ts', 'export const x = 1;\n', 'utf8');
+      const pinnedSnap = JSON.stringify({
+        ts: '2026-10-01T00:00:00Z',
+        type: 'milestone',
+        project: 'swa-test',
+        summary: 'shared-kw older pinned entry',
+        files: ['pinned-anchor.ts'],
+      });
+      const existingLines = fs.readFileSync(path.join('.agent', 'SNAPSHOT.jsonl'), 'utf8');
+      fs.writeFileSync(path.join('.agent', 'SNAPSHOT.jsonl'), nonExistentSnap + '\n' + pinnedSnap + '\n' + existingLines, 'utf8');
+      captureSnapshot('milestone', 'shared-kw recent unpinned entry');
+      logs.length = 0;
+      recoverContext({ query: 'shared-kw', keep: 3 });
+      const pinnedOut = logs.join('\n');
+      assert.equal(pinnedOut.includes('shared-kw older pinned entry'), true, 'existing workspace file path must boost older snapshot recall');
+      assert.equal(pinnedOut.includes('shared-kw missing-file entry'), false, 'non-existent file path must not receive tie-breaker boost');
     } finally {
       console.log = origLog;
     }

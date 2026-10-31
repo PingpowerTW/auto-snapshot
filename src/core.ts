@@ -439,15 +439,19 @@ export function recoverContext(options: { skill?: string; query?: string; keep?:
       ? allParsed.filter(s => !s.skill || s.skill === options.skill)
       : allParsed;
 
-    // --- CRAG correction: recall up to 2 older snapshots that out-score the SWA window,
+    // --- CRAG correction + Workspace Path Pinning (borrowed from DeepSeek-TUI compaction.rs):
+    // recall up to 2 older snapshots that out-score the SWA window (with +1 boost for existing workspace path anchors),
     // evicting the oldest window entries so total count strictly respects keepLimit.
     let validSnapshots = filtered.slice(0, keepLimit);
     if (options.query && filtered.length > 0) {
       locallyAdequate = isContextSufficientLocally(options.query, filtered.slice(0, 15));
       const qTokens = extractKeywords(options.query);
+      const hasPinnedWorkspacePath = (s: Snapshot) =>
+        (s.files || []).some(f => { try { return Boolean(f && fs.existsSync(f)); } catch { return false; } });
       const score = (s: Snapshot) => {
-        const sText = normalizeEngramText(`${s.summary || (s as any).title || ''} ${s.decision || ''} ${(s.tags || []).join(' ')} ${s.reflexion || ''}`);
-        return qTokens.filter(qt => sText.includes(qt)).length;
+        const sText = normalizeEngramText(`${s.summary || (s as any).title || ''} ${s.decision || ''} ${(s.tags || []).join(' ')} ${(s.files || []).join(' ')} ${s.reflexion || ''}`);
+        const kwHits = qTokens.filter(qt => sText.includes(qt)).length;
+        return kwHits > 0 && hasPinnedWorkspacePath(s) ? kwHits + 1 : kwHits;
       };
       const windowBest = Math.max(0, ...validSnapshots.map(score));
       const maxOlder = Math.max(0, Math.min(2, keepLimit - 1));
